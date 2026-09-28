@@ -2,31 +2,68 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { mulberry32, hash2, valueNoise } from './rng.js';
 import {
-  makeWindowTextures, makeGroundTexture, makeSignTextures, WINDOW_TILE_W, WINDOW_TILE_H,
+  makeFacadeTextures, makeDomeTexture, makeDomeEmissive, makeGroundTexture, FACADE_W, FACADE_H,
 } from './textures.js';
 
 export const CELL = 100; // chunk size (one city block + half of each surrounding road)
 export const ROAD = 10; // half road width inside a chunk edge
-export const SPIRE_TOP = 420;
-export const SPIRE_POS = new THREE.Vector3(CELL / 2, 0, CELL / 2);
+export const WATER_Y = -0.5; // sea surface
+export const WATER_FLOOR = -1.2; // where you stand when wading (low enough to climb the sea wall)
+export const SPIRE_TOP = 362; // observation deck of the Celestia Spire
+export const SPIRE_POS = new THREE.Vector3(-50, 0, -50);
+export const DOME_POS = new THREE.Vector3(50, 0, 50);
 
 export const DISTRICTS = {
-  central: { name: 'セントラル区', sub: 'CENTRAL DISTRICT', h: [90, 260], lots: [1, 2], neon: [0x00f0ff, 0xff2bd6, 0xffffff], tints: [0x9fb8ff, 0xd0e0ff, 0x88ccff], tex: [1, 3, 5, 7], sign: 0.35 },
-  commercial: { name: 'ネオン商業区', sub: 'NEON MARKET', h: [30, 120], lots: [2, 3], neon: [0xff2bd6, 0xffcc33, 0x00f0ff, 0xff4d6d], tints: [0xffc0e8, 0xffe0b0, 0xc0f0ff], tex: [0, 2, 4, 6], sign: 0.8 },
-  residential: { name: 'ハビタット住宅区', sub: 'HABITAT RESIDENCES', h: [20, 70], lots: [2, 3], neon: [0x7dff9a, 0x00f0ff, 0xffcc33], tints: [0xfff0d8, 0xe8e0ff, 0xd8fff0], tex: [0, 4, 3], sign: 0.2 },
-  industrial: { name: 'ファクトリー区', sub: 'INDUSTRIAL ZONE', h: [14, 45], lots: [1, 2], neon: [0xff7b3a, 0xffcc33, 0xff4d6d], tints: [0xb0a090, 0xa0a8b0, 0xc0b0a0], tex: [2, 6, 5], sign: 0.15 },
-  park: { name: 'グリーンドーム公園', sub: 'BIODOME PARK', h: [0, 0], lots: [1, 1], neon: [0x7dff9a, 0x00f0ff], tints: [0xffffff], tex: [0], sign: 0 },
+  core: { name: 'オーレリア中枢区', sub: 'AURELIA CORE', h: [50, 190], lots: [1, 2], types: { tower: 3, tiered: 2, saucer: 1.2, capsule: 1.2 } },
+  domes: { name: 'ドーム街', sub: 'DOME QUARTER', h: [25, 90], lots: [2], types: { dome: 2.2, tower: 1, tiered: 1, capsule: 1, saucer: 0.5 } },
+  residential: { name: '丘の住宅地', sub: 'HILLSIDE HOMES', h: [5, 13], lots: [2], types: { houses: 1 } },
+  park: { name: '桜の庭園', sub: 'SAKURA GARDENS', h: [0, 0], lots: [1], types: {} },
+  plaza: { name: 'ウォーターフロント広場', sub: 'WATERFRONT PLAZA', h: [0, 0], lots: [1], types: {} },
+  bay: { name: 'オーレリア湾', sub: 'AURELIA BAY', h: [0, 0], lots: [1], types: {} },
 };
 
+const TINTS = [0xffffff, 0xfff4f8, 0xf4f0ff, 0xf0f6ff, 0xfff8ee];
+const BLOSSOMS = [0xf6b3cf, 0xeea0c4, 0xd9b0e8, 0xfbd3e0, 0xf2a7bd];
+const GREENS = [0x7aa36a, 0x5e8c5e, 0x8fb07a];
+
+export function isWater(cx, cz) {
+  if (Math.abs(cx) <= 1 && cz >= -1 && cz <= 1) return false; // the city core is always land
+  // Southern bay with an uneven shoreline (straight in front of the Grand Dome).
+  const shore = Math.abs(cx) <= 1 ? 2 : 2 + Math.floor(valueNoise(cx / 3.5, 0.5, 11) * 2.6);
+  if (cz >= shore) {
+    // scattered islands further out
+    return !(cz > shore + 1 && valueNoise(cx / 2.2, cz / 2.2, 31) > 0.78);
+  }
+  // inland lakes
+  return Math.hypot(cx, cz) > 3 && valueNoise(cx / 4, cz / 4, 23) < 0.17;
+}
+
 export function districtAt(cx, cz) {
-  if (Math.abs(cx) <= 1 && Math.abs(cz) <= 1) return 'central';
+  if (isWater(cx, cz)) return 'bay';
+  if (cx === 0 && cz === 1) return 'plaza';
+  if (Math.abs(cx) <= 1 && Math.abs(cz) <= 1) return 'core';
   const n = valueNoise(cx / 5 + 100, cz / 5 + 100, 7);
   const d = Math.hypot(cx, cz);
-  if (d < 5 && n > 0.35) return 'central';
-  if (n < 0.24) return 'park';
-  if (n < 0.47) return 'residential';
-  if (n < 0.72) return 'commercial';
-  return 'industrial';
+  if (d < 4 && n > 0.6) return 'core';
+  if (n < 0.28) return 'park';
+  if (n < 0.52) return 'residential';
+  if (n < 0.8 || d > 9) return 'domes';
+  return 'core';
+}
+
+function pick(rand, weights) {
+  const entries = Object.entries(weights);
+  let total = 0;
+  for (const [, w] of entries) total += w;
+  let r = rand() * total;
+  for (const [k, w] of entries) if ((r -= w) <= 0) return k;
+  return entries[0][0];
+}
+
+function scaleUV(geo, su, sv, offset = 0) {
+  const uv = geo.attributes.uv;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * su + offset, uv.getY(i) * sv);
+  return geo;
 }
 
 export class City {
@@ -37,64 +74,66 @@ export class City {
     this.collected = collected;
     this.time = 0;
 
-    this.windowTex = makeWindowTextures();
-    this.signTex = makeSignTextures();
-    this.sideMats = new Map();
-    this.roofMat = new THREE.MeshStandardMaterial({ color: 0x1a1a24, roughness: 0.8, metalness: 0.3 });
-    this.groundMat = new THREE.MeshStandardMaterial({ map: makeGroundTexture(CELL, ROAD), roughness: 0.55, metalness: 0.4 });
-    this.parkMat = new THREE.MeshStandardMaterial({ color: 0x0b2a1c, roughness: 0.9, emissive: 0x03140c });
-    this.neonMats = new Map();
-    this.signMats = this.signTex.map((t) => new THREE.MeshBasicMaterial({ map: t, side: THREE.DoubleSide, toneMapped: false }));
+    this.facades = makeFacadeTextures();
+    this.facadeMats = new Map();
+    const std = (o) => new THREE.MeshStandardMaterial(o);
+    this.mat = {
+      pearl: std({ color: 0xf3eff6, metalness: 0.45, roughness: 0.22 }),
+      pearlWarm: std({ color: 0xf6ece8, metalness: 0.4, roughness: 0.3 }),
+      glass: std({ color: 0xffffff, map: makeDomeTexture(), emissive: 0xffffff, emissiveMap: makeDomeEmissive(), emissiveIntensity: 0.4, metalness: 0.85, roughness: 0.08 }),
+      darkGlass: std({ color: 0x7482b4, metalness: 1, roughness: 0.06 }),
+      stone: std({ color: 0xcfc6cc, roughness: 0.8, metalness: 0.05 }),
+      ground: std({ map: makeGroundTexture(CELL, ROAD), roughness: 0.75, metalness: 0.05 }),
+      grass: std({ color: 0x86a071, roughness: 0.95 }),
+      path: std({ color: 0xe8e0e6, roughness: 0.8 }),
+      trunk: std({ color: 0x6d5c60, roughness: 0.9 }),
+      pond: std({ color: 0x8a9ccc, metalness: 1, roughness: 0.05 }),
+      hull: std({ color: 0xf6f4f8, metalness: 0.3, roughness: 0.3 }),
+      hullStripe: std({ color: 0x6f86c8, metalness: 0.3, roughness: 0.3 }),
+    };
+    this.blossomMats = BLOSSOMS.map((c) => std({ color: c, roughness: 0.85, flatShading: true, emissive: c, emissiveIntensity: 0.05 }));
+    this.greenMats = GREENS.map((c) => std({ color: c, roughness: 0.9, flatShading: true }));
+    const light = (c) => new THREE.MeshBasicMaterial({ color: c, toneMapped: false });
+    this.light = { warm: light(0xffe2b8), blue: light(0xcfe6ff), portal: light(0xc4c8ff), red: light(0xff8a9a), pink: light(0xffc8e6) };
+    this.solidMats = new Set([this.mat.pearl, this.mat.pearlWarm, this.mat.glass, this.mat.darkGlass, this.mat.stone]);
 
     this.geo = {
-      plane: new THREE.PlaneGeometry(CELL, CELL),
       box: new THREE.BoxGeometry(1, 1, 1),
-      sign: new THREE.PlaneGeometry(1, 1),
       chip: new THREE.OctahedronGeometry(1.1, 0),
-      beam: new THREE.CylinderGeometry(0.35, 0.35, 1, 6, 1, true),
-      lampPole: new THREE.CylinderGeometry(0.15, 0.2, 9, 6),
-      lampHead: new THREE.BoxGeometry(2.4, 0.3, 0.6),
-      trunk: new THREE.CylinderGeometry(0.4, 0.6, 5, 6),
-      crown: new THREE.IcosahedronGeometry(3.2, 0),
+      beam: new THREE.CylinderGeometry(0.3, 0.3, 1, 6, 1, true),
+      lampPole: new THREE.CylinderGeometry(0.12, 0.18, 7, 8),
+      lampOrb: new THREE.SphereGeometry(0.45, 12, 8),
+      trunk: new THREE.CylinderGeometry(0.3, 0.5, 4, 6),
+      crown: new THREE.IcosahedronGeometry(2.4, 1),
+      orb: new THREE.SphereGeometry(1, 16, 10),
     };
-    this.chipMat = new THREE.MeshBasicMaterial({ color: 0xffd23a, toneMapped: false });
-    this.beamMat = new THREE.MeshBasicMaterial({ color: 0xffd23a, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
-    this.lampMat = new THREE.MeshStandardMaterial({ color: 0x333344, metalness: 0.8, roughness: 0.3 });
-    this.crownMats = [0x00ffa0, 0x00d0ff, 0x7dff9a].map((c) => new THREE.MeshStandardMaterial({ color: 0x0b3b2a, emissive: c, emissiveIntensity: 0.9, flatShading: true }));
+    this.chipMat = new THREE.MeshBasicMaterial({ color: 0xfff0b0, toneMapped: false });
+    this.beamMat = new THREE.MeshBasicMaterial({ color: 0xfff0c8, transparent: true, opacity: 0.28, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
 
-    this.chips = []; // live chip objects {id, mesh, beam, pos}
-    this.animated = []; // meshes with userData.spin
-    this.nightFactor = 1;
+    this.chips = [];
+    this.animated = [];
+    this.nightFactor = 0.5;
   }
 
-  sideMat(texIndex, tint) {
-    const key = texIndex + '_' + tint;
-    let m = this.sideMats.get(key);
+  facadeMat(variant, tint) {
+    const key = variant + '_' + tint;
+    let m = this.facadeMats.get(key);
     if (!m) {
-      const tex = this.windowTex[texIndex];
+      const f = this.facades[variant];
       m = new THREE.MeshStandardMaterial({
-        color: new THREE.Color(tint).multiplyScalar(0.35), map: tex, emissive: new THREE.Color(tint), emissiveMap: tex,
-        emissiveIntensity: 0.9, roughness: 0.35, metalness: 0.6,
+        color: tint, map: f.map, emissive: 0xffffff, emissiveMap: f.emissive,
+        emissiveIntensity: this.nightFactor, metalness: 0.35, roughness: 0.28,
       });
-      this.sideMats.set(key, m);
-    }
-    return m;
-  }
-
-  neonMat(color) {
-    let m = this.neonMats.get(color);
-    if (!m) {
-      m = new THREE.MeshBasicMaterial({ color, toneMapped: false });
-      this.neonMats.set(color, m);
+      this.facadeMats.set(key, m);
+      this.solidMats.add(m);
     }
     return m;
   }
 
   setNightFactor(f) {
     this.nightFactor = f;
-    for (const m of this.sideMats.values()) m.emissiveIntensity = 0.1 + 0.8 * f;
-    if (this.spireMat) this.spireMat.emissiveIntensity = 0.1 + 0.8 * f;
-    for (const m of this.crownMats) m.emissiveIntensity = 0.3 + 0.8 * f;
+    for (const m of this.facadeMats.values()) m.emissiveIntensity = 0.05 + 1.1 * f;
+    this.mat.glass.emissiveIntensity = 0.1 + 0.9 * f;
   }
 
   key(cx, cz) { return cx + ',' + cz; }
@@ -109,93 +148,111 @@ export class City {
     const wanted = [];
     for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
       if (dx * dx + dz * dz > r * r + 1) continue;
-      const k = this.key(pcx + dx, pcz + dz);
-      if (!this.chunks.has(k)) wanted.push([dx * dx + dz * dz, pcx + dx, pcz + dz]);
+      if (!this.chunks.has(this.key(pcx + dx, pcz + dz))) wanted.push([dx * dx + dz * dz, pcx + dx, pcz + dz]);
     }
     wanted.sort((a, b) => a[0] - b[0]);
     for (const [, cx, cz] of wanted) {
       if (budget-- <= 0) break;
       this.buildChunk(cx, cz);
     }
-
-    // Unload far chunks.
     for (const [k, ch] of this.chunks) {
       const dx = ch.cx - pcx, dz = ch.cz - pcz;
       if (dx * dx + dz * dz > (r + 2) * (r + 2)) this.disposeChunk(k, ch);
     }
 
-    // Animate chips / rings.
     for (const c of this.chips) {
       c.mesh.rotation.y += dt * 2;
       c.mesh.position.y = c.baseY + Math.sin(this.time * 2 + c.phase) * 0.4;
     }
-    for (const m of this.animated) m.rotation[m.userData.axis] += dt * m.userData.spin;
+    for (const m of this.animated) {
+      const u = m.userData;
+      if (u.spin) m.rotation[u.axis] += dt * u.spin;
+      if (u.bob !== undefined) {
+        m.position.y = u.baseY + Math.sin(this.time * 1.3 + u.bob) * 0.15;
+        m.rotation.z = Math.sin(this.time * 1.1 + u.bob) * 0.04;
+        if (u.speed) {
+          u.t += dt * u.speed;
+          m.position.x = u.cx + Math.cos(u.t) * u.r;
+          m.position.z = u.cz + Math.sin(u.t) * u.r;
+          m.rotation.y = -u.t + (u.speed > 0 ? Math.PI : 0);
+        }
+      }
+    }
   }
 
+  // ---------------------------------------------------------------- chunks
   buildChunk(cx, cz) {
     const rand = mulberry32(hash2(cx, cz, 42));
     const dKey = districtAt(cx, cz);
     const D = DISTRICTS[dKey];
     const group = new THREE.Group();
-    const ownGeos = [];
-    const colliders = [];
-    const buildings = [];
-    const chunk = { cx, cz, group, ownGeos, colliders, buildings, chips: [], anim: [], solids: [], district: dKey };
-
+    const chunk = {
+      cx, cz, group, ownGeos: [], colliders: [], spots: [], chips: [], anim: [], solids: [],
+      district: dKey, water: dKey === 'bay',
+    };
     const ox = cx * CELL, oz = cz * CELL;
-    const ground = new THREE.Mesh(this.geo.plane, this.groundMat);
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.set(ox + CELL / 2, 0, oz + CELL / 2);
-    group.add(ground);
-
-    // Street lamps at block corners.
-    for (const [lx, lz] of [[ROAD - 1, ROAD - 1], [CELL - ROAD + 1, ROAD - 1], [ROAD - 1, CELL - ROAD + 1], [CELL - ROAD + 1, CELL - ROAD + 1]]) {
-      const pole = new THREE.Mesh(this.geo.lampPole, this.lampMat);
-      pole.position.set(ox + lx, 4.5, oz + lz);
-      const head = new THREE.Mesh(this.geo.lampHead, this.neonMat(D.neon[0]));
-      head.position.set(ox + lx, 9, oz + lz);
-      head.rotation.y = Math.PI / 4;
-      group.add(pole, head);
-    }
-
     const x0 = ox + ROAD, z0 = oz + ROAD, B = CELL - 2 * ROAD;
 
-    if (cx === 0 && cz === 0) {
-      this.buildSpire(chunk);
-    } else if (dKey === 'park') {
-      this.buildPark(chunk, rand, x0, z0, B);
+    if (chunk.water) {
+      this.buildBay(chunk, rand, ox, oz);
     } else {
-      const n = D.lots[(rand() * D.lots.length) | 0];
-      const lot = B / n;
-      const distBoost = Math.max(0, 1 - Math.hypot(cx, cz) / 8);
-      for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
-        if (dKey !== 'central' && rand() < 0.1) continue; // empty plaza lot
-        const margin = 2 + rand() * 3;
-        const w = lot - margin * 2 - rand() * lot * 0.2;
-        const d = lot - margin * 2 - rand() * lot * 0.2;
-        let h = D.h[0] + Math.pow(rand(), 1.6) * (D.h[1] - D.h[0]);
-        h *= 1 + distBoost * 0.6;
-        const bx = x0 + lot * (i + 0.5), bz = z0 + lot * (j + 0.5);
-        this.buildTower(chunk, rand, D, bx, bz, w, d, h);
+      // Ground slab: its sides form a sea wall where land meets water.
+      const ground = new THREE.Mesh(this.geo.box, [this.mat.stone, this.mat.stone, this.mat.ground, this.mat.stone, this.mat.stone, this.mat.stone]);
+      ground.scale.set(CELL, 4, CELL);
+      ground.position.set(ox + CELL / 2, -2, oz + CELL / 2);
+      group.add(ground);
+      for (const [lx, lz] of [[ROAD - 2, ROAD - 2], [CELL - ROAD + 2, ROAD - 2], [ROAD - 2, CELL - ROAD + 2], [CELL - ROAD + 2, CELL - ROAD + 2]]) {
+        this.addLamp(chunk, ox + lx, oz + lz);
       }
-    }
 
-    // Data chip — about half of the chunks hold one.
-    const chipId = this.key(cx, cz);
-    if (!(cx === 0 && cz === 0) && rand() < 0.55 && !this.collected.has(chipId)) {
-      let pos;
-      if (buildings.length && rand() < 0.5) {
-        const b = buildings[(rand() * buildings.length) | 0];
-        pos = new THREE.Vector3(b.x, b.top + 2.2, b.z);
-      } else {
-        // On the road next to this block.
-        pos = rand() < 0.5
-          ? new THREE.Vector3(ox + 2 + rand() * (CELL - 4), 1.8, oz + (rand() < 0.5 ? 3 : CELL - 3))
-          : new THREE.Vector3(ox + (rand() < 0.5 ? 3 : CELL - 3), 1.8, oz + 2 + rand() * (CELL - 4));
+      if (cx === 0 && cz === 0) this.buildGrandDome(chunk);
+      else if (cx === -1 && cz === -1) this.buildSpire(chunk);
+      else if (cx === 1 && cz === -1) this.buildSaucer(chunk, rand, 150, -50, 7, 170, 34);
+      else if (dKey === 'plaza') this.buildPlaza(chunk, rand, x0, z0, B);
+      else if (dKey === 'park') this.buildPark(chunk, rand, x0, z0, B);
+      else if (dKey === 'residential') this.buildHomes(chunk, rand, x0, z0, B);
+      else {
+        const n = D.lots[(rand() * D.lots.length) | 0];
+        const lot = B / n;
+        const boost = Math.max(0, 1 - Math.hypot(cx, cz) / 8);
+        for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+          const bx = x0 + lot * (i + 0.5), bz = z0 + lot * (j + 0.5);
+          if (dKey !== 'core' && rand() < 0.12) { this.addTree(chunk, rand, bx, bz, 1.2); continue; }
+          let h = D.h[0] + Math.pow(rand(), 1.5) * (D.h[1] - D.h[0]);
+          h *= 1 + boost * 0.5;
+          const type = pick(rand, D.types);
+          const L = lot - 4;
+          if (type === 'tower') this.buildTower(chunk, rand, bx, bz, Math.min(L * 0.36, 7 + rand() * 9), h);
+          else if (type === 'tiered') this.buildTiered(chunk, rand, bx, bz, Math.min(L * 0.36, 9 + rand() * 8), h);
+          else if (type === 'capsule') this.buildCapsule(chunk, rand, bx, bz, Math.min(L * 0.3, 6 + rand() * 6), h);
+          else if (type === 'saucer') this.buildSaucer(chunk, rand, bx, bz, 3 + rand() * 3, h, Math.min(L * 0.48, 13 + rand() * 12));
+          else if (type === 'dome') this.buildDome(chunk, rand, bx, bz, Math.min(L * 0.42, 10 + rand() * 10));
+        }
+        // blossoms along the sidewalk
+        for (let t = 0; t < 4; t++) {
+          const s = rand() < 0.5 ? 1 : -1;
+          const along = x0 + 6 + rand() * (B - 12);
+          if (rand() < 0.5) this.addTree(chunk, rand, along, s > 0 ? z0 + 2 : z0 + B - 2, 0.8);
+          else this.addTree(chunk, rand, s > 0 ? x0 + 2 : x0 + B - 2, along - x0 + z0, 0.8);
+        }
       }
-      this.addChip(chunk, chipId, pos);
-    } else if (cx === 0 && cz === 0 && !this.collected.has('spire')) {
-      this.addChip(chunk, 'spire', new THREE.Vector3(SPIRE_POS.x, SPIRE_TOP + 2.5, SPIRE_POS.z));
+
+      // Data chip — about half of the land chunks hold one.
+      const chipId = this.key(cx, cz);
+      if (cx === -1 && cz === -1) {
+        if (!this.collected.has('spire')) this.addChip(chunk, 'spire', new THREE.Vector3(SPIRE_POS.x + 11, SPIRE_TOP + 2.2, SPIRE_POS.z));
+      } else if (rand() < 0.55 && !this.collected.has(chipId)) {
+        let pos;
+        if (chunk.spots.length && rand() < 0.5) {
+          const s = chunk.spots[(rand() * chunk.spots.length) | 0];
+          pos = new THREE.Vector3(s.x, s.y + 2.2, s.z);
+        } else {
+          pos = rand() < 0.5
+            ? new THREE.Vector3(ox + 2 + rand() * (CELL - 4), 1.8, oz + (rand() < 0.5 ? 3 : CELL - 3))
+            : new THREE.Vector3(ox + (rand() < 0.5 ? 3 : CELL - 3), 1.8, oz + 2 + rand() * (CELL - 4));
+        }
+        this.addChip(chunk, chipId, pos);
+      }
     }
 
     this.bake(chunk);
@@ -245,17 +302,437 @@ export class City {
       for (const g of geos) g.dispose();
       const mesh = new THREE.Mesh(merged, mat);
       mesh.matrixAutoUpdate = false;
+      const isLight = mat instanceof THREE.MeshBasicMaterial;
+      mesh.castShadow = !isLight && mat !== this.mat.ground && mat !== this.mat.grass;
+      mesh.receiveShadow = !isLight;
       group.add(mesh);
       chunk.ownGeos.push(merged);
-      if (mat === this.roofMat || mat === this.spireMat || this.isSideMat(mat)) chunk.solids.push(mesh);
+      if (this.solidMats.has(mat)) chunk.solids.push(mesh);
     }
   }
 
-  isSideMat(mat) {
-    for (const m of this.sideMats.values()) if (m === mat) return true;
-    return false;
+  disposeChunk(k, ch) {
+    this.scene.remove(ch.group);
+    for (const g of ch.ownGeos) g.dispose();
+    if (ch.chips.length) this.chips = this.chips.filter((c) => c.chunk !== ch);
+    if (ch.anim.length) this.animated = this.animated.filter((m) => !ch.anim.includes(m));
+    this.chunks.delete(k);
   }
 
+  // ---------------------------------------------------------------- helpers
+  add(chunk, geo, mat, x, y, z, own = true) {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    if (own) chunk.ownGeos.push(geo);
+    chunk.group.add(m);
+    return m;
+  }
+
+  addDynamic(chunk, obj) {
+    obj.userData.dynamic = true;
+    obj.traverse((o) => { o.userData.dynamic = true; });
+    chunk.group.add(obj);
+    chunk.anim.push(obj);
+    this.animated.push(obj);
+  }
+
+  box(chunk, x, z, hx, hz, bottom, top) {
+    chunk.colliders.push({ minX: x - hx, maxX: x + hx, minZ: z - hz, maxZ: z + hz, top, bottom });
+  }
+
+  // Approximate a vertical cylinder with three overlapping boxes.
+  circle(chunk, x, z, r, bottom, top) {
+    this.box(chunk, x, z, r * 0.92, r * 0.38, bottom, top);
+    this.box(chunk, x, z, r * 0.38, r * 0.92, bottom, top);
+    this.box(chunk, x, z, r * 0.72, r * 0.72, bottom, top);
+  }
+
+  // Hemisphere / dome collider as stacked circles.
+  domeCollider(chunk, x, z, r, base, height) {
+    for (const [f, t] of [[0.95, 0.4], [0.78, 0.7], [0.5, 0.92]]) this.circle(chunk, x, z, r * f, base, base + height * t);
+  }
+
+  facadeCylinder(chunk, rand, rTop, rBottom, h, x, y, z) {
+    const variant = (rand() * this.facades.length) | 0;
+    const tint = TINTS[(rand() * TINTS.length) | 0];
+    const geo = new THREE.CylinderGeometry(rTop, rBottom, h, 20, 1, true);
+    scaleUV(geo, (Math.PI * 2 * Math.max(rTop, rBottom)) / FACADE_W, h / FACADE_H, ((rand() * 4) | 0) * 0.25);
+    return this.add(chunk, geo, this.facadeMat(variant, tint), x, y + h / 2, z);
+  }
+
+  disc(chunk, r, thick, x, y, z, mat = this.mat.pearl) {
+    return this.add(chunk, new THREE.CylinderGeometry(r, r * 0.96, thick, 36), mat, x, y + thick / 2, z);
+  }
+
+  glassDome(chunk, r, x, y, z, squash = 1, mat = this.mat.glass) {
+    const g = new THREE.SphereGeometry(r, 28, 10, 0, Math.PI * 2, 0, Math.PI / 2);
+    const m = this.add(chunk, g, mat, x, y, z);
+    m.scale.y = squash;
+    return m;
+  }
+
+  ribs(chunk, r, x, y, z, count = 6, squash = 1, tube = 0.35) {
+    const g = new THREE.TorusGeometry(r * 1.01, tube, 5, 24, Math.PI);
+    chunk.ownGeos.push(g);
+    for (let i = 0; i < count; i++) {
+      const m = new THREE.Mesh(g, this.mat.pearl);
+      m.position.set(x, y, z);
+      m.rotation.y = (i / count) * Math.PI;
+      m.scale.y = squash;
+      chunk.group.add(m);
+    }
+  }
+
+  tipLight(chunk, x, y, z, s = 0.8, mat = this.light.red) {
+    const m = this.add(chunk, this.geo.orb, mat, x, y, z, false);
+    m.scale.setScalar(s);
+  }
+
+  addLamp(chunk, x, z) {
+    this.add(chunk, this.geo.lampPole, this.mat.pearl, x, 3.5, z, false);
+    this.add(chunk, this.geo.lampOrb, this.light.warm, x, 7.2, z, false);
+  }
+
+  addTree(chunk, rand, x, z, s = 1) {
+    s *= 0.8 + rand() * 0.5;
+    const t = this.add(chunk, this.geo.trunk, this.mat.trunk, x, 2 * s, z, false);
+    t.scale.setScalar(s);
+    const mats = rand() < 0.7 ? this.blossomMats : this.greenMats;
+    for (let i = 0; i < 2; i++) {
+      const c = this.add(chunk, this.geo.crown, mats[(rand() * mats.length) | 0], x + (rand() - 0.5) * 2.4 * s, (4.2 + rand() * 1.6) * s, z + (rand() - 0.5) * 2.4 * s, false);
+      c.scale.setScalar(s * (0.75 + rand() * 0.4));
+      c.rotation.set(rand() * 3, rand() * 3, 0);
+    }
+  }
+
+  // ---------------------------------------------------------------- buildings
+  buildTower(chunk, rand, x, z, r, h) {
+    if (rand() < 0.4) {
+      // Smooth pearl shaft wrapped in glass ribbons.
+      this.add(chunk, new THREE.CylinderGeometry(r * 0.88, r, h, 20, 1, true), this.mat.pearl, x, h / 2, z);
+      const gap = 7 + rand() * 6;
+      for (let y = gap; y < h - 4; y += gap) {
+        const rr = r - (y / h) * r * 0.12 + 0.15;
+        this.add(chunk, new THREE.CylinderGeometry(rr, rr, 2.4, 20, 1, true), this.mat.darkGlass, x, y, z);
+      }
+    } else {
+      this.facadeCylinder(chunk, rand, r * 0.88, r, h, x, 0, z);
+    }
+    // pearl bands
+    for (let y = 18 + rand() * 12; y < h - 6; y += 22 + rand() * 20) this.disc(chunk, r * 1.06, 1, x, y, z);
+    this.disc(chunk, r * 1.08, 1.6, x, h, z);
+    this.circle(chunk, x, z, r * 0.95, 0, h + 1.6);
+    if (rand() < 0.55) {
+      this.glassDome(chunk, r * 0.86, x, h + 1.6, z, 0.6);
+      this.domeCollider(chunk, x, z, r * 0.86, h + 1.6, r * 0.86 * 0.6);
+      chunk.spots.push({ x, z, y: h + 1.6 + r * 0.86 * 0.6 * 0.92 });
+      if (rand() < 0.5) {
+        const ah = 8 + rand() * 20;
+        this.add(chunk, new THREE.CylinderGeometry(0.15, 0.4, ah, 6), this.mat.pearl, x, h + r * 0.5 + ah / 2, z);
+        this.tipLight(chunk, x, h + r * 0.5 + ah, z, 0.6);
+      }
+    } else {
+      const ch = r * (1.4 + rand() * 1.5);
+      this.add(chunk, new THREE.ConeGeometry(r * 0.9, ch, 28), this.mat.pearl, x, h + 1.6 + ch / 2, z);
+      this.circle(chunk, x, z, r * 0.45, h + 1.6, h + 1.6 + ch * 0.5);
+      this.tipLight(chunk, x, h + 1.6 + ch + 0.4, z, 0.5);
+    }
+  }
+
+  buildTiered(chunk, rand, x, z, r, h) {
+    const tiers = 3 + ((rand() * 2) | 0);
+    let y = 0, rr = r;
+    for (let t = 0; t < tiers; t++) {
+      const th = (h / tiers) * (t === 0 ? 1.3 : 0.9);
+      this.facadeCylinder(chunk, rand, rr * 0.95, rr, th, x, y, z);
+      this.circle(chunk, x, z, rr * 0.97, y, y + th + 1.4);
+      y += th;
+      this.disc(chunk, rr * 1.25, 1.4, x, y, z);
+      this.box(chunk, x, z, rr * 0.88, rr * 0.88, y, y + 1.4); // ledge you can land on
+      y += 1.4;
+      rr *= 0.72;
+    }
+    this.glassDome(chunk, rr * 1.1, x, y, z, 1);
+    this.ribs(chunk, rr * 1.1, x, y, z, 4);
+    this.domeCollider(chunk, x, z, rr * 1.1, y, rr * 1.1);
+    const sh = 10 + rand() * 18;
+    this.add(chunk, new THREE.ConeGeometry(0.6, sh, 8), this.mat.pearl, x, y + rr * 1.05 + sh / 2, z);
+    this.tipLight(chunk, x, y + rr * 1.05 + sh, z, 0.5, this.light.blue);
+    chunk.spots.push({ x: x + r * 0.95, z, y: h * (1.3 / tiers) + 1.4 }); // first ledge
+  }
+
+  buildCapsule(chunk, rand, x, z, r, h) {
+    h = Math.max(h, r * 3);
+    const variant = (rand() * this.facades.length) | 0;
+    const geo = new THREE.CapsuleGeometry(r, h - 2 * r, 8, 28);
+    scaleUV(geo, (Math.PI * 2 * r) / FACADE_W, h / FACADE_H);
+    this.add(chunk, geo, this.facadeMat(variant, TINTS[(rand() * TINTS.length) | 0]), x, h / 2, z);
+    // vertical pearl fins
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + rand();
+      const fin = this.add(chunk, this.geo.box, this.mat.pearl, x + Math.cos(a) * r, h * 0.45, z + Math.sin(a) * r, false);
+      fin.scale.set(1.2, h * 0.8, 1.2);
+    }
+    this.circle(chunk, x, z, r * 1.02, 0, h - r * 0.5);
+    this.circle(chunk, x, z, r * 0.6, 0, h - r * 0.15);
+    chunk.spots.push({ x, z, y: h - r * 0.15 });
+    const ah = 6 + rand() * 14;
+    this.add(chunk, new THREE.CylinderGeometry(0.1, 0.3, ah, 6), this.mat.pearl, x, h + ah / 2 - 0.3, z);
+    this.tipLight(chunk, x, h + ah, z, 0.45);
+  }
+
+  buildSaucer(chunk, rand, x, z, stemR, h, R) {
+    this.facadeCylinder(chunk, rand, stemR, stemR * 1.5, h - 3, x, 0, z);
+    // struts from the stem to the disc underside
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + 0.4;
+      const from = new THREE.Vector3(x + Math.cos(a) * stemR, h - 28, z + Math.sin(a) * stemR);
+      const to = new THREE.Vector3(x + Math.cos(a) * R * 0.55, h - 3, z + Math.sin(a) * R * 0.55);
+      const mid = from.clone().lerp(to, 0.5).add(new THREE.Vector3(Math.cos(a) * 2, -3, Math.sin(a) * 2));
+      const tube = new THREE.TubeGeometry(new THREE.QuadraticBezierCurve3(from, mid, to), 12, 0.7, 6);
+      this.add(chunk, tube, this.mat.pearl, 0, 0, 0);
+    }
+    const prof = [[0, -4], [R * 0.45, -3.6], [R * 0.85, -1.8], [R, 0], [R * 0.97, 1.6], [R * 0.8, 2.6], [0, 2.8]].map(([a, b]) => new THREE.Vector2(a, b));
+    this.add(chunk, new THREE.LatheGeometry(prof, 48), this.mat.pearl, x, h, z);
+    this.add(chunk, new THREE.CylinderGeometry(R * 0.985, R * 0.985, 0.9, 48, 1, true), this.light.warm, x, h + 0.4, z);
+    this.circle(chunk, x, z, stemR * 1.4, 0, h - 4);
+    this.circle(chunk, x, z, R * 0.92, h - 3, h + 2.7);
+    const dr = R * 0.58;
+    this.glassDome(chunk, dr, x, h + 2.6, z, 0.62);
+    this.ribs(chunk, dr, x, h + 2.6, z, 6, 0.62, 0.3);
+    this.domeCollider(chunk, x, z, dr, h + 2.6, dr * 0.62);
+    chunk.spots.push({ x: x + R * 0.78, z, y: h + 2.7 });
+    const sh = 12 + rand() * 20;
+    this.add(chunk, new THREE.ConeGeometry(0.7, sh, 8), this.mat.pearl, x, h + 2.6 + dr * 0.6 + sh / 2, z);
+    this.tipLight(chunk, x, h + 2.6 + dr * 0.6 + sh, z, 0.6);
+  }
+
+  buildDome(chunk, rand, x, z, r) {
+    this.disc(chunk, r * 1.06, 2.5, x, 0, z, this.mat.pearlWarm);
+    this.glassDome(chunk, r, x, 2.5, z, 0.9);
+    this.ribs(chunk, r, x, 2.5, z, 6, 0.9, 0.4);
+    this.domeCollider(chunk, x, z, r, 2.5, r * 0.9);
+    this.circle(chunk, x, z, r * 1.02, 0, 2.5);
+    chunk.spots.push({ x, z, y: 2.5 + r * 0.9 * 0.92 });
+    // entrance arch
+    const arch = new THREE.TorusGeometry(3.4, 0.5, 8, 20, Math.PI);
+    const a = rand() * Math.PI * 2;
+    const m = this.add(chunk, arch, this.mat.pearl, x + Math.cos(a) * r * 0.98, 2.5, z + Math.sin(a) * r * 0.98);
+    m.rotation.y = -a + Math.PI / 2;
+    const glow = this.add(chunk, new THREE.CircleGeometry(3, 16, 0, Math.PI), this.light.warm, x + Math.cos(a) * r, 2.5, z + Math.sin(a) * r);
+    glow.rotation.y = -a + Math.PI / 2;
+  }
+
+  buildHomes(chunk, rand, x0, z0, B) {
+    const n = 3;
+    const lot = B / n;
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+      const cx = x0 + lot * (i + 0.5), cz = z0 + lot * (j + 0.5);
+      if (rand() < 0.3) { this.addTree(chunk, rand, cx, cz, 1.1); continue; }
+      const w = 9 + rand() * 7, d = 9 + rand() * 7, h = 5 + rand() * 9;
+      const variant = rand() < 0.5 ? 1 : 4; // arched-window façades
+      const geo = new THREE.BoxGeometry(w, h, d);
+      const uv = geo.attributes.uv;
+      for (let f = 0; f < 6; f++) {
+        const span = f < 2 ? d : w;
+        for (let v = 0; v < 4; v++) uv.setXY(f * 4 + v, uv.getX(f * 4 + v) * (span / FACADE_W), uv.getY(f * 4 + v) * (h / FACADE_H));
+      }
+      const fm = this.facadeMat(variant, TINTS[(rand() * TINTS.length) | 0]);
+      this.add(chunk, geo, [fm, fm, this.mat.pearl, this.mat.pearl, fm, fm], cx, h / 2, cz);
+      // barrel-vault roof
+      const alongX = w > d;
+      const rr = (alongX ? d : w) / 2;
+      // Half-cylinder: Rz turns its axis horizontal with the curve up, Ry aligns it with the long side.
+      const roof = this.add(chunk, new THREE.CylinderGeometry(rr, rr, alongX ? w : d, 16, 1, false, 0, Math.PI), this.mat.pearl, cx, h, cz);
+      roof.rotation.set(0, alongX ? 0 : Math.PI / 2, Math.PI / 2, 'YXZ');
+      this.box(chunk, cx, cz, w / 2, d / 2, 0, h + rr * 0.6);
+      chunk.spots.push({ x: cx, z: cz, y: h + rr * 0.6 });
+      if (rand() < 0.6) this.addTree(chunk, rand, cx + w / 2 + 2, cz + d / 2 + 1, 0.8);
+    }
+  }
+
+  buildPark(chunk, rand, x0, z0, B) {
+    const lawn = this.add(chunk, this.geo.box, this.mat.grass, x0 + B / 2, 0.1, z0 + B / 2, false);
+    lawn.scale.set(B, 0.2, B);
+    // curved footpath ring + cross paths
+    const ring = this.add(chunk, new THREE.RingGeometry(B * 0.28, B * 0.28 + 3, 48), this.mat.path, x0 + B / 2, 0.22, z0 + B / 2);
+    ring.rotation.x = -Math.PI / 2;
+    for (const [sx, sz] of [[B, 3], [3, B]]) {
+      const p = this.add(chunk, this.geo.box, this.mat.path, x0 + B / 2, 0.21, z0 + B / 2, false);
+      p.scale.set(sx, 0.02, sz);
+    }
+    const pond = this.add(chunk, new THREE.CircleGeometry(B * 0.16, 32), this.mat.pond, x0 + B / 2, 0.23, z0 + B / 2);
+    pond.rotation.x = -Math.PI / 2;
+    // pavilion
+    if (rand() < 0.6) {
+      const px = x0 + B * (rand() < 0.5 ? 0.18 : 0.82), pz = z0 + B * (rand() < 0.5 ? 0.18 : 0.82);
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2;
+        const c = this.add(chunk, this.geo.box, this.mat.pearl, px + Math.cos(a) * 5, 2.5, pz + Math.sin(a) * 5, false);
+        c.scale.set(0.5, 5, 0.5);
+      }
+      this.disc(chunk, 5.8, 0.6, px, 5, pz);
+      this.glassDome(chunk, 5.4, px, 5.6, pz, 0.7);
+      this.box(chunk, px, pz, 4.6, 4.6, 5, 8.8);
+      chunk.spots.push({ x: px, z: pz, y: 8.8 });
+    }
+    const trees = 16 + ((rand() * 14) | 0);
+    for (let i = 0; i < trees; i++) {
+      const tx = x0 + 4 + rand() * (B - 8), tz = z0 + 4 + rand() * (B - 8);
+      const d = Math.hypot(tx - (x0 + B / 2), tz - (z0 + B / 2));
+      if (d < B * 0.2 || Math.abs(d - B * 0.28 - 1.5) < 3) continue;
+      this.addTree(chunk, rand, tx, tz, 1.1);
+    }
+  }
+
+  buildPlaza(chunk, rand, x0, z0, B) {
+    const cx = x0 + B / 2, cz = z0 + B / 2;
+    // fountain
+    this.disc(chunk, 9, 1.2, cx, 0, cz, this.mat.pearlWarm);
+    const water = this.add(chunk, new THREE.CircleGeometry(8.2, 32), this.mat.pond, cx, 1.25, cz);
+    water.rotation.x = -Math.PI / 2;
+    this.add(chunk, new THREE.CylinderGeometry(0.6, 1.2, 6, 12), this.mat.pearl, cx, 3, cz);
+    this.disc(chunk, 3, 0.5, cx, 4.5, cz);
+    this.tipLight(chunk, cx, 6.4, cz, 0.9, this.light.blue);
+    this.circle(chunk, cx, cz, 9, 0, 1.2);
+    // avenues of cherry trees
+    // (kept to the sides so the view from the waterfront to the Grand Dome stays open)
+    for (let i = 0; i < 8; i++) {
+      const t = z0 + 6 + (i / 7) * (B - 12);
+      this.addTree(chunk, rand, x0 + 6, t, 1.1);
+      this.addTree(chunk, rand, x0 + B - 6, t, 1.1);
+    }
+    // benches
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + 0.26;
+      const b = this.add(chunk, this.geo.box, this.mat.pearl, cx + Math.cos(a) * 16, 0.5, cz + Math.sin(a) * 16, false);
+      b.scale.set(3.4, 0.4, 1.1);
+      b.rotation.y = -a + Math.PI / 2;
+    }
+  }
+
+  buildBay(chunk, rand, ox, oz) {
+    // Boats: dynamic so they can bob and a few can cruise in slow circles.
+    const boats = (rand() * 3.2) | 0;
+    for (let i = 0; i < boats; i++) {
+      const boat = this.makeBoat(rand);
+      const bx = ox + 15 + rand() * 70, bz = oz + 15 + rand() * 70;
+      boat.position.set(bx, WATER_Y + 0.35, bz);
+      boat.rotation.y = rand() * Math.PI * 2;
+      const moving = rand() < 0.4;
+      boat.userData = { bob: rand() * 6, baseY: WATER_Y + 0.35, speed: moving ? (rand() < 0.5 ? 0.08 : -0.08) : 0, t: rand() * 6, cx: bx, cz: bz, r: 12 };
+      this.addDynamic(chunk, boat);
+    }
+    // occasional floating dock with a light buoy
+    if (rand() < 0.3) {
+      const d = this.add(chunk, this.geo.box, this.mat.pearlWarm, ox + 50, WATER_Y + 0.3, oz + 50, false);
+      d.scale.set(18, 0.8, 5);
+      this.box(chunk, ox + 50, oz + 50, 9, 2.5, WATER_FLOOR, WATER_Y + 0.7);
+      this.tipLight(chunk, ox + 58, WATER_Y + 1.4, oz + 50, 0.5, this.light.warm);
+    }
+    if (rand() < 0.25) {
+      const bx = ox + 20 + rand() * 60, bz = oz + 20 + rand() * 60;
+      this.add(chunk, new THREE.CylinderGeometry(0.5, 0.9, 3, 10), this.mat.pearl, bx, WATER_Y + 1.2, bz);
+      this.tipLight(chunk, bx, WATER_Y + 3, bz, 0.4, this.light.pink);
+    }
+  }
+
+  makeBoat(rand) {
+    const g = new THREE.Group();
+    const L = 6 + rand() * 6;
+    const hull = new THREE.Mesh(this.boatGeo || (this.boatGeo = new THREE.CapsuleGeometry(1, 4, 4, 12)), this.mat.hull);
+    hull.rotation.x = Math.PI / 2;
+    hull.scale.set(1.2, L / 6, 0.5);
+    const stripe = new THREE.Mesh(this.geo.box, this.mat.hullStripe);
+    stripe.scale.set(2.5, 0.12, L * 0.8);
+    stripe.position.y = 0.2;
+    const cabin = new THREE.Mesh(this.geo.orb, this.mat.darkGlass);
+    cabin.scale.set(0.9, 0.6, L * 0.18);
+    cabin.position.set(0, 0.5, -L * 0.05);
+    g.add(hull, stripe, cabin);
+    if (rand() < 0.4) {
+      const mast = new THREE.Mesh(this.geo.box, this.mat.pearl);
+      mast.scale.set(0.12, 6, 0.12);
+      mast.position.y = 3;
+      g.add(mast);
+    }
+    for (const o of g.children) o.castShadow = true;
+    return g;
+  }
+
+  // ---------------------------------------------------------------- landmarks
+  buildGrandDome(chunk) {
+    const { x, z } = DOME_POS;
+    const R = 30, base = 6;
+    this.disc(chunk, 38, base, x, 0, z, this.mat.pearlWarm);
+    this.circle(chunk, x, z, 38, 0, base);
+    // front steps toward the waterfront (+z)
+    for (let k = 1; k <= 6; k++) {
+      const s = this.add(chunk, this.geo.box, this.mat.pearlWarm, x, (k * 1) / 2, z + 38 + (6 - k) * 1.5 + 0.2, false);
+      s.scale.set(18, k * 1, 1.6);
+      this.box(chunk, x, z + 38 + (6 - k) * 1.5 + 0.2, 9, 0.8, 0, k * 1);
+    }
+    this.box(chunk, x, z + 36, 9, 3, 0, base); // landing between the top step and the round podium
+    this.add(chunk, new THREE.TorusGeometry(38.2, 0.25, 6, 96), this.light.blue, x, base, z).rotation.x = Math.PI / 2;
+
+    this.glassDome(chunk, R, x, base, z, 0.95);
+    this.ribs(chunk, R, x, base, z, 8, 0.95, 0.5);
+    this.domeCollider(chunk, x, z, R, base, R * 0.95);
+    // central spine running front to back, with twin spires
+    const spine = this.add(chunk, new THREE.TorusGeometry(R * 1.03, 1.8, 10, 48, Math.PI), this.mat.pearl, x, base, z);
+    spine.rotation.y = Math.PI / 2;
+    spine.scale.y = 0.95;
+    for (const dx of [-3.2, 3.2]) {
+      this.add(chunk, new THREE.ConeGeometry(1.4, 46, 10), this.mat.pearl, x + dx, base + R * 0.9 + 23, z + 2);
+      this.tipLight(chunk, x + dx, base + R * 0.9 + 46.5, z + 2, 0.7, this.light.blue);
+    }
+    this.add(chunk, new THREE.ConeGeometry(0.8, 30, 8), this.mat.pearl, x, base + R * 0.9 + 15, z - 6);
+
+    // The portal: a glowing ring on the front face of the dome.
+    // Sits just outside the glass so the flat disc doesn't cut into the curved dome.
+    const el = 0.42, pr = R + 1.6;
+    const px = x, py = base + pr * 0.95 * Math.sin(el), pz = z + pr * Math.cos(el);
+    const ring = this.add(chunk, new THREE.TorusGeometry(8.5, 1.2, 12, 48), this.mat.pearl, px, py, pz);
+    ring.rotation.x = -el;
+    const disc = this.add(chunk, new THREE.CircleGeometry(7.6, 40), this.light.portal, px, py + Math.sin(el) * 0.1, pz + Math.cos(el) * 0.1);
+    disc.rotation.x = -el;
+    for (const s of [-1, 1]) {
+      const a = s * 0.62;
+      const wx = x + Math.sin(a) * R * 0.97, wz = z + Math.cos(a) * R * 0.97, wy = base + 11;
+      const w = this.add(chunk, new THREE.TorusGeometry(3.4, 0.6, 8, 24), this.mat.pearl, wx, wy, wz);
+      w.rotation.y = a;
+      const g = this.add(chunk, new THREE.CircleGeometry(3, 20), this.light.warm, wx, wy, wz - Math.cos(a) * 0.1);
+      g.rotation.y = a;
+    }
+    // Arched legs sweeping from the dome down to the plaza.
+    for (const a of [-0.95, -0.45, 0.45, 0.95]) {
+      const out = (rad, y) => new THREE.Vector3(x + Math.sin(a) * rad, y, z + Math.cos(a) * rad);
+      const curve = new THREE.CatmullRomCurve3([out(R * 0.8, base + 18), out(R + 4, base + 12), out(R + 7, base + 4), out(R + 7.5, base)]);
+      this.add(chunk, new THREE.TubeGeometry(curve, 24, 1.1, 8), this.mat.pearl, 0, 0, 0);
+    }
+  }
+
+  buildSpire(chunk) {
+    const { x, z } = SPIRE_POS;
+    const prof = [[11, 0], [9.5, 20], [8, 80], [7, 160], [6.2, 240], [5.6, 300], [7, 330], [5.4, 350], [4.6, 358]]
+      .map(([r, y]) => new THREE.Vector2(r, y));
+    const geo = new THREE.LatheGeometry(prof, 32);
+    scaleUV(geo, (Math.PI * 2 * 8) / FACADE_W, 358 / FACADE_H);
+    this.add(chunk, geo, this.facadeMat(2, 0xf6f2ff), x, 0, z);
+    for (let y = 40; y < 340; y += 50) this.disc(chunk, 9 - y / 80, 1.2, x, y, z);
+    this.circle(chunk, x, z, 10, 0, SPIRE_TOP - 6);
+    // observation deck
+    const deck = [[0, -3], [9, -3], [15, -1], [16.5, 1.5], [16, 3], [0, 3]].map(([a, b]) => new THREE.Vector2(a, b));
+    this.add(chunk, new THREE.LatheGeometry(deck, 48), this.mat.pearl, x, SPIRE_TOP - 3, z);
+    this.add(chunk, new THREE.TorusGeometry(16.6, 0.2, 6, 64), this.light.warm, x, SPIRE_TOP - 1.2, z).rotation.x = Math.PI / 2;
+    this.circle(chunk, x, z, 16, SPIRE_TOP - 6, SPIRE_TOP);
+    this.glassDome(chunk, 7, x, SPIRE_TOP, z, 0.9);
+    this.domeCollider(chunk, x, z, 7, SPIRE_TOP, 6.3);
+    this.add(chunk, new THREE.ConeGeometry(1.4, 80, 10), this.mat.pearl, x, SPIRE_TOP + 5 + 40, z);
+    this.tipLight(chunk, x, SPIRE_TOP + 86, z, 1, this.light.red);
+  }
+
+  // ---------------------------------------------------------------- chips
   addChip(chunk, id, pos) {
     const mesh = new THREE.Mesh(this.geo.chip, this.chipMat);
     mesh.position.copy(pos);
@@ -276,214 +753,7 @@ export class City {
     this.chips = this.chips.filter((c) => c !== chip);
   }
 
-  // Building with a box UV-mapped so windows keep real-world scale.
-  addBox(chunk, mat, x, y, z, w, h, d, uvOffset = 0) {
-    const g = new THREE.BoxGeometry(w, h, d);
-    const uv = g.attributes.uv;
-    for (let f = 0; f < 6; f++) {
-      if (f === 2 || f === 3) continue; // top/bottom use roof material
-      const uSpan = f < 2 ? d : w;
-      for (let v = 0; v < 4; v++) {
-        const i = f * 4 + v;
-        uv.setXY(i, uv.getX(i) * (uSpan / WINDOW_TILE_W) + uvOffset, uv.getY(i) * (h / WINDOW_TILE_H));
-      }
-    }
-    chunk.ownGeos.push(g);
-    const mesh = new THREE.Mesh(g, [mat, mat, this.roofMat, this.roofMat, mat, mat]);
-    mesh.position.set(x, y + h / 2, z);
-    chunk.group.add(mesh);
-    chunk.colliders.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2, top: y + h, bottom: y });
-    return mesh;
-  }
-
-  addNeon(chunk, color, x, y, z, sx, sy, sz) {
-    const m = new THREE.Mesh(this.geo.box, this.neonMat(color));
-    m.position.set(x, y, z);
-    m.scale.set(sx, sy, sz);
-    chunk.group.add(m);
-    return m;
-  }
-
-  // Four thin bars outlining a w x d rectangle.
-  addNeonRing(chunk, color, x, y, z, w, d, t = 0.4) {
-    this.addNeon(chunk, color, x, y, z - d / 2, w, t, t);
-    this.addNeon(chunk, color, x, y, z + d / 2, w, t, t);
-    this.addNeon(chunk, color, x - w / 2, y, z, t, t, d);
-    this.addNeon(chunk, color, x + w / 2, y, z, t, t, d);
-  }
-
-  buildTower(chunk, rand, D, x, z, w, d, h) {
-    const texIndex = D.tex[(rand() * D.tex.length) | 0];
-    const tint = D.tints[(rand() * D.tints.length) | 0];
-    const mat = this.sideMat(texIndex, tint);
-    const neon = D.neon[(rand() * D.neon.length) | 0];
-    const uvOff = ((rand() * 4) | 0) * 0.25;
-
-    this.addBox(chunk, mat, x, 0, z, w, h, d, uvOff);
-    let top = h, tw = w, td = d;
-
-    // Vertical neon edges.
-    if (rand() < 0.7) {
-      for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
-        this.addNeon(chunk, neon, x + sx * (w / 2 + 0.05), h / 2, z + sz * (d / 2 + 0.05), 0.35, h, 0.35);
-      }
-    }
-    // Horizontal neon bands.
-    const bands = rand() < 0.5 ? 1 + ((rand() * 3) | 0) : 0;
-    for (let b = 0; b < bands; b++) {
-      const by = h * (0.3 + 0.6 * rand());
-      this.addNeon(chunk, neon, x, by, z, w + 0.4, 0.4, d + 0.4);
-    }
-
-    // Setback tiers for tall towers.
-    if (h > 60 && rand() < 0.75) {
-      const tiers = 1 + ((rand() * 2) | 0);
-      for (let t = 0; t < tiers; t++) {
-        tw *= 0.6 + rand() * 0.2;
-        td *= 0.6 + rand() * 0.2;
-        const th = h * (0.15 + rand() * 0.25);
-        this.addBox(chunk, mat, x, top, z, tw, th, td, uvOff);
-        this.addNeonRing(chunk, neon, x, top + 0.2, z, tw + 1.2, td + 1.2);
-        top += th;
-      }
-    }
-    // Rooftop neon ring.
-    this.addNeonRing(chunk, neon, x, top + 0.25, z, tw + 0.5, td + 0.5, 0.5);
-
-    // Antenna spire.
-    if (top > 80 && rand() < 0.6) {
-      const ah = 10 + rand() * 30;
-      this.addNeon(chunk, 0xff3344, x, top + ah / 2, z, 0.5, ah, 0.5);
-    }
-
-    // Holographic signs on façades.
-    if (rand() < D.sign) {
-      const count = 1 + ((rand() * 2) | 0);
-      for (let s = 0; s < count; s++) {
-        const face = (rand() * 4) | 0;
-        const sw = Math.min(face < 2 ? w : d, 16) * (0.6 + rand() * 0.3);
-        const sh = sw * 0.375;
-        const sy = Math.min(h - sh, 8 + rand() * Math.min(h, 60));
-        const sign = new THREE.Mesh(this.geo.sign, this.signMats[(rand() * this.signMats.length) | 0]);
-        sign.scale.set(sw, sh, 1);
-        const off = 0.8;
-        if (face === 0) { sign.position.set(x, sy, z + d / 2 + off); }
-        else if (face === 1) { sign.position.set(x, sy, z - d / 2 - off); sign.rotation.y = Math.PI; }
-        else if (face === 2) { sign.position.set(x + w / 2 + off, sy, z); sign.rotation.y = Math.PI / 2; }
-        else { sign.position.set(x - w / 2 - off, sy, z); sign.rotation.y = -Math.PI / 2; }
-        chunk.group.add(sign);
-      }
-    }
-    chunk.buildings.push({ x, z, top, w: tw, d: td });
-  }
-
-  buildPark(chunk, rand, x0, z0, B) {
-    const lawn = new THREE.Mesh(this.geo.box, this.parkMat);
-    lawn.scale.set(B, 0.3, B);
-    lawn.position.set(x0 + B / 2, 0.15, z0 + B / 2);
-    chunk.group.add(lawn);
-    // Glowing footpaths
-    this.addNeon(chunk, 0x00f0ff, x0 + B / 2, 0.32, z0 + B / 2, B, 0.05, 0.3);
-    this.addNeon(chunk, 0x00f0ff, x0 + B / 2, 0.32, z0 + B / 2, 0.3, 0.05, B);
-    // Glowing trees
-    const trees = 10 + ((rand() * 12) | 0);
-    for (let i = 0; i < trees; i++) {
-      const tx = x0 + 4 + rand() * (B - 8), tz = z0 + 4 + rand() * (B - 8);
-      if (Math.abs(tx - (x0 + B / 2)) < 3 || Math.abs(tz - (z0 + B / 2)) < 3) continue;
-      const s = 0.7 + rand() * 0.8;
-      const trunk = new THREE.Mesh(this.geo.trunk, this.lampMat);
-      trunk.position.set(tx, 2.5 * s, tz);
-      trunk.scale.setScalar(s);
-      const crown = new THREE.Mesh(this.geo.crown, this.crownMats[(rand() * 3) | 0]);
-      crown.position.set(tx, 6 * s, tz);
-      crown.scale.setScalar(s);
-      crown.rotation.set(rand() * 3, rand() * 3, 0);
-      chunk.group.add(trunk, crown);
-    }
-    // Floating holo-ring monument
-    if (rand() < 0.5) {
-      const ring = new THREE.Mesh(new THREE.TorusGeometry(6, 0.3, 8, 48), this.neonMat(0x7dff9a));
-      chunk.ownGeos.push(ring.geometry);
-      ring.position.set(x0 + B / 2, 12, z0 + B / 2);
-      ring.userData = { spin: 0.6, axis: 'y', dynamic: true };
-      chunk.group.add(ring);
-      chunk.anim.push(ring);
-      this.animated.push(ring);
-    }
-  }
-
-  buildSpire(chunk) {
-    const { x, z } = SPIRE_POS;
-    const g = chunk.group;
-    const plazaMat = this.sideMat(1, 0x88ccff);
-    // Plaza base
-    this.addBox(chunk, plazaMat, x, 0, z, 56, 8, 56);
-    this.addNeonRing(chunk, 0x00f0ff, x, 8.2, z, 56.6, 56.6, 0.5);
-    // Main shaft (visual cylinder + box collider)
-    const shaftGeo = new THREE.CylinderGeometry(7, 15, SPIRE_TOP - 8, 12, 1, true);
-    chunk.ownGeos.push(shaftGeo);
-    if (!this.spireMat) {
-      const tex = this.windowTex[7].clone();
-      tex.repeat.set(6, 24);
-      tex.needsUpdate = true;
-      this.spireMat = new THREE.MeshStandardMaterial({ color: 0x223355, map: tex, emissive: 0x88ccff, emissiveMap: tex, emissiveIntensity: 0.9, metalness: 0.8, roughness: 0.25 });
-    }
-    const shaft = new THREE.Mesh(shaftGeo, this.spireMat);
-    shaft.position.set(x, 8 + (SPIRE_TOP - 8) / 2, z);
-    g.add(shaft);
-    chunk.colliders.push({ minX: x - 11, maxX: x + 11, minZ: z - 11, maxZ: z + 11, top: SPIRE_TOP - 2, bottom: 8 });
-    // Vertical light strips
-    for (let i = 0; i < 6; i++) {
-      // Follow the shaft's taper from r=15 at the base to r=7 at the top.
-      const a = (i / 6) * Math.PI * 2;
-      const bottom = new THREE.Vector3(x + Math.cos(a) * 15.3, 8, z + Math.sin(a) * 15.3);
-      const top = new THREE.Vector3(x + Math.cos(a) * 7.3, SPIRE_TOP, z + Math.sin(a) * 7.3);
-      const dir = top.clone().sub(bottom);
-      const len = dir.length();
-      const mid = bottom.clone().add(top).multiplyScalar(0.5);
-      const strip = this.addNeon(chunk, i % 2 ? 0xff2bd6 : 0x00f0ff, mid.x, mid.y, mid.z, 0.5, len, 0.5);
-      strip.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
-    }
-    // Rotating rings
-    for (let i = 0; i < 5; i++) {
-      const y = 80 + i * 70;
-      const r = 15 + (4 - i) * 4 + 6;
-      const tg = new THREE.TorusGeometry(r, 0.6, 8, 64);
-      chunk.ownGeos.push(tg);
-      const ring = new THREE.Mesh(tg, this.neonMat(i % 2 ? 0xff2bd6 : 0x00f0ff));
-      ring.position.set(x, y, z);
-      ring.rotation.x = Math.PI / 2 + (i % 2 ? 0.15 : -0.15);
-      ring.userData = { spin: (i % 2 ? 1 : -1) * 0.3, axis: 'z', dynamic: true };
-      g.add(ring);
-      chunk.anim.push(ring);
-      this.animated.push(ring);
-    }
-    // Observation deck on top
-    const deckGeo = new THREE.CylinderGeometry(18, 12, 4, 24);
-    chunk.ownGeos.push(deckGeo);
-    const deck = new THREE.Mesh(deckGeo, this.roofMat);
-    deck.position.set(x, SPIRE_TOP - 2, z);
-    g.add(deck);
-    chunk.colliders.push({ minX: x - 16, maxX: x + 16, minZ: z - 16, maxZ: z + 16, top: SPIRE_TOP, bottom: SPIRE_TOP - 4 });
-    this.addNeon(chunk, 0xffcc33, x, SPIRE_TOP + 0.1, z, 30, 0.2, 0.4);
-    this.addNeon(chunk, 0xffcc33, x, SPIRE_TOP + 0.1, z, 0.4, 0.2, 30);
-    const beaconGeo = new THREE.SphereGeometry(3, 16, 12);
-    chunk.ownGeos.push(beaconGeo);
-    const beacon = new THREE.Mesh(beaconGeo, this.neonMat(0xff2bd6));
-    beacon.position.set(x, SPIRE_TOP + 60, z);
-    g.add(beacon);
-    this.addNeon(chunk, 0xffffff, x, SPIRE_TOP + 30, z, 0.8, 60, 0.8);
-  }
-
-  disposeChunk(k, ch) {
-    this.scene.remove(ch.group);
-    for (const g of ch.ownGeos) g.dispose();
-    if (ch.chips.length) this.chips = this.chips.filter((c) => c.chunk !== ch);
-    if (ch.anim.length) this.animated = this.animated.filter((m) => !ch.anim.includes(m));
-    this.chunks.delete(k);
-  }
-
-  // --- Queries ---------------------------------------------------------
+  // ---------------------------------------------------------------- queries
   *collidersNear(x, z, range = 1) {
     const cx = Math.floor(x / CELL), cz = Math.floor(z / CELL);
     for (let dz = -range; dz <= range; dz++) for (let dx = -range; dx <= range; dx++) {
@@ -492,9 +762,13 @@ export class City {
     }
   }
 
+  isWaterAt(x, z) {
+    return isWater(Math.floor(x / CELL), Math.floor(z / CELL));
+  }
+
   // Highest surface under (x,z) that is not above y + step.
-  groundHeight(x, z, y, radius = 0, step = 1.2) {
-    let h = 0;
+  groundHeight(x, z, y, radius = 0, step = 1.3) {
+    let h = this.isWaterAt(x, z) ? WATER_FLOOR : 0;
     for (const c of this.collidersNear(x, z)) {
       if (x + radius > c.minX && x - radius < c.maxX && z + radius > c.minZ && z - radius < c.maxZ) {
         if (c.top <= y + step && c.top > h) h = c.top;
@@ -503,14 +777,15 @@ export class City {
     return h;
   }
 
-  // Push a cylinder (x,z,radius) spanning [y0,y1] out of building boxes.
-  resolve(pos, radius, height) {
+  // Push a cylinder (x,z,radius) spanning [y, y+height] out of collider boxes.
+  // Boxes whose top is within `step` of the feet are left for groundHeight to climb.
+  resolve(pos, radius, height, step = 0) {
     let hit = false;
     for (const c of this.collidersNear(pos.x, pos.z)) {
-      if (pos.y >= c.top - 0.05 || pos.y + height <= c.bottom) continue;
+      if (pos.y + step >= c.top - 0.05 || pos.y + height <= c.bottom) continue;
       const nx = Math.max(c.minX, Math.min(pos.x, c.maxX));
       const nz = Math.max(c.minZ, Math.min(pos.z, c.maxZ));
-      let dx = pos.x - nx, dz = pos.z - nz;
+      const dx = pos.x - nx, dz = pos.z - nz;
       const d2 = dx * dx + dz * dz;
       if (d2 >= radius * radius) continue;
       hit = true;
@@ -519,7 +794,6 @@ export class City {
         pos.x = nx + (dx / d) * radius;
         pos.z = nz + (dz / d) * radius;
       } else {
-        // Centre is inside the box: exit via the nearest face.
         const opts = [
           [c.minX - radius - pos.x, 0], [c.maxX + radius - pos.x, 0],
           [0, c.minZ - radius - pos.z], [0, c.maxZ + radius - pos.z],

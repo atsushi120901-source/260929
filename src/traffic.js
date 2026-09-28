@@ -1,40 +1,53 @@
 import * as THREE from 'three';
 import { CELL } from './city.js';
 
-const LANES = [1.6, 1.6, 22, 38, 60, 90]; // altitudes; ground level appears twice for more street traffic
-const COLORS = [0x00f0ff, 0xff2bd6, 0xffcc33, 0x7dff9a, 0xff4d6d];
+const LANES = [1.8, 1.8, 24, 40, 62, 95]; // altitudes; street level appears twice for more ground traffic
+const ACCENTS = [0xcfe6ff, 0xffd9a8, 0xf6c8ff, 0xbff0e0];
+const BODIES = [0xf4f1f6, 0xf6ece8, 0xe9ecf6, 0xd9d2e6];
 
-export function makeCarMesh(color = 0x00f0ff, bodyColor = 0x1b1d2a) {
+const shared = {};
+function geos() {
+  if (!shared.body) {
+    shared.body = new THREE.CapsuleGeometry(1.1, 3.2, 6, 16);
+    shared.body.rotateX(Math.PI / 2);
+    shared.canopy = new THREE.SphereGeometry(1, 20, 12, 0, Math.PI * 2, 0, Math.PI / 2);
+    shared.glow = new THREE.BoxGeometry(1.6, 0.1, 3.8);
+    shared.lamp = new THREE.BoxGeometry(1.2, 0.18, 0.1);
+    shared.fin = new THREE.BoxGeometry(0.12, 0.7, 1.2);
+  }
+  return shared;
+}
+
+// Pearl hover-pod; forward is -Z.
+export function makeCarMesh(accent = ACCENTS[0], bodyColor = BODIES[0]) {
+  const g = geos();
   const car = new THREE.Group();
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(2.4, 0.9, 5),
-    new THREE.MeshStandardMaterial({ color: bodyColor, metalness: 0.9, roughness: 0.25 }),
-  );
-  const cabin = new THREE.Mesh(
-    new THREE.BoxGeometry(1.9, 0.7, 2.4),
-    new THREE.MeshStandardMaterial({ color: 0x0a0f1a, metalness: 1, roughness: 0.05, emissive: color, emissiveIntensity: 0.15 }),
-  );
-  cabin.position.set(0, 0.75, -0.2);
-  const glow = new THREE.MeshBasicMaterial({ color, toneMapped: false });
-  const under = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.12, 4.6), glow);
-  under.position.y = -0.5;
-  const head = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.18, 0.1), new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }));
-  head.position.set(0, 0.1, -2.55);
-  const tail = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.18, 0.1), new THREE.MeshBasicMaterial({ color: 0xff2040, toneMapped: false }));
-  tail.position.set(0, 0.1, 2.55);
-  car.add(body, cabin, under, head, tail);
+  const body = new THREE.Mesh(g.body, new THREE.MeshStandardMaterial({ color: bodyColor, metalness: 0.55, roughness: 0.18 }));
+  body.scale.set(1, 0.62, 1);
+  const canopy = new THREE.Mesh(g.canopy, new THREE.MeshStandardMaterial({ color: 0x5d6c9c, metalness: 1, roughness: 0.04 }));
+  canopy.scale.set(0.9, 0.75, 1.5);
+  canopy.position.set(0, 0.4, -0.4);
+  const glow = new THREE.Mesh(g.glow, new THREE.MeshBasicMaterial({ color: accent, toneMapped: false }));
+  glow.position.y = -0.62;
+  const head = new THREE.Mesh(g.lamp, new THREE.MeshBasicMaterial({ color: 0xfff6e6, toneMapped: false }));
+  head.position.set(0, 0.05, -2.72);
+  const tail = new THREE.Mesh(g.lamp, new THREE.MeshBasicMaterial({ color: 0xff8a9a, toneMapped: false }));
+  tail.position.set(0, 0.05, 2.72);
+  const fin = new THREE.Mesh(g.fin, body.material);
+  fin.position.set(0, 0.8, 2);
+  car.add(body, canopy, glow, head, tail, fin);
+  for (const o of car.children) o.castShadow = true;
   return car;
 }
 
 export class Traffic {
   constructor(scene, count = 70) {
-    this.scene = scene;
     this.cars = [];
     this.range = CELL * 5;
     for (let i = 0; i < count; i++) {
-      const mesh = makeCarMesh(COLORS[i % COLORS.length], [0x1b1d2a, 0x2a1b2a, 0x1b2a2a, 0xdddde8][i % 4]);
+      const mesh = makeCarMesh(ACCENTS[i % ACCENTS.length], BODIES[i % BODIES.length]);
       scene.add(mesh);
-      this.cars.push({ mesh, axis: 'x', dir: 1, speed: 20, lane: 0, fixed: 0, alt: 0 });
+      this.cars.push({ mesh, axis: 'x', dir: 1, speed: 20, fixed: 0, alt: 0, pos: 0 });
     }
     this.initialized = false;
   }
@@ -43,8 +56,8 @@ export class Traffic {
     car.axis = Math.random() < 0.5 ? 'x' : 'z';
     car.dir = Math.random() < 0.5 ? 1 : -1;
     car.alt = LANES[(Math.random() * LANES.length) | 0];
-    car.speed = car.alt < 5 ? 14 + Math.random() * 10 : 25 + Math.random() * 30;
-    // Roads run along multiples of CELL; keep to the right-hand side of the road.
+    car.speed = car.alt < 5 ? 12 + Math.random() * 8 : 20 + Math.random() * 25;
+    // Roads run along multiples of CELL; keep to one side of the road.
     const other = car.axis === 'x' ? pz : px;
     const road = Math.round(other / CELL + (Math.random() * 8 - 4)) * CELL;
     car.fixed = road + car.dir * (car.axis === 'x' ? 3.5 : -3.5);

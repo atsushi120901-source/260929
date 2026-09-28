@@ -1,14 +1,16 @@
 import * as THREE from 'three';
 import { makeCarMesh } from './traffic.js';
+import { WATER_Y } from './city.js';
 
 const GRAVITY = 32;
 const tmp = new THREE.Vector3();
 
 function makeCharacter() {
   const g = new THREE.Group();
-  const suit = new THREE.MeshStandardMaterial({ color: 0x3a3d5c, metalness: 0.5, roughness: 0.4, emissive: 0x1a1c3a });
-  const glow = new THREE.MeshBasicMaterial({ color: 0x00f0ff, toneMapped: false });
-  const pink = new THREE.MeshBasicMaterial({ color: 0xff2bd6, toneMapped: false });
+  const suit = new THREE.MeshStandardMaterial({ color: 0xf2eef6, metalness: 0.35, roughness: 0.35 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x4a5078, metalness: 0.6, roughness: 0.3 });
+  const glow = new THREE.MeshBasicMaterial({ color: 0xbfdcff, toneMapped: false });
+  const pink = new THREE.MeshBasicMaterial({ color: 0xffc0dc, toneMapped: false });
 
   const torso = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.9, 0.45), suit);
   torso.position.y = 1.25;
@@ -16,9 +18,9 @@ function makeCharacter() {
   stripe.position.y = 1.35;
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.28, 16, 12), suit);
   head.position.y = 1.95;
-  const visor = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.1, 0.1), glow);
+  const visor = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.14, 0.1), dark);
   visor.position.set(0, 1.98, -0.24);
-  const pack = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.6, 0.25), suit);
+  const pack = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.6, 0.25), dark);
   pack.position.set(0, 1.3, 0.32);
   const packLight = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.06, 0.02), pink);
   packLight.position.set(0, 1.4, 0.46);
@@ -30,7 +32,7 @@ function makeCharacter() {
     pivot.add(m);
     return pivot;
   };
-  const legL = limb(0.28, 0.8, suit), legR = limb(0.28, 0.8, suit);
+  const legL = limb(0.28, 0.8, dark), legR = limb(0.28, 0.8, dark);
   legL.position.set(-0.2, 0.8, 0);
   legR.position.set(0.2, 0.8, 0);
   const armL = limb(0.2, 0.75, suit), armR = limb(0.2, 0.75, suit);
@@ -42,6 +44,7 @@ function makeCharacter() {
     l.add(sole);
   }
   g.add(torso, stripe, head, visor, pack, packLight, legL, legR, armL, armR);
+  g.traverse((o) => { o.castShadow = true; });
   g.userData = { legL, legR, armL, armR };
   return g;
 }
@@ -49,7 +52,7 @@ function makeCharacter() {
 export class Player {
   constructor(scene, city) {
     this.city = city;
-    this.pos = new THREE.Vector3(50, 0, 104);
+    this.pos = new THREE.Vector3(50, 0, 193);
     this.vel = new THREE.Vector3();
     this.yaw = 0; // facing
     this.onGround = false;
@@ -64,7 +67,8 @@ export class Player {
     const fwd = (input.down('KeyW') ? 1 : 0) - (input.down('KeyS') ? 1 : 0);
     const side = (input.down('KeyD') ? 1 : 0) - (input.down('KeyA') ? 1 : 0);
     const sprint = input.down('ShiftLeft') || input.down('ShiftRight');
-    const speed = sprint ? 16 : 7;
+    const wading = this.pos.y < -0.4;
+    const speed = (sprint ? 16 : 7) * (wading ? 0.45 : 1);
 
     // Camera-relative movement; forward is -Z at yaw 0.
     tmp.set(side, 0, -fwd);
@@ -84,7 +88,7 @@ export class Player {
     // Horizontal move + wall push-out first (at the previous height), then vertical.
     this.pos.x += this.vel.x * dt;
     this.pos.z += this.vel.z * dt;
-    this.city.resolve(this.pos, this.radius, this.height);
+    this.city.resolve(this.pos, this.radius, this.height, 1.3);
     this.pos.y += this.vel.y * dt;
 
     const ground = this.city.groundHeight(this.pos.x, this.pos.z, this.pos.y, this.radius * 0.6);
@@ -121,10 +125,10 @@ export class Player {
 export class Hovercar {
   constructor(scene, city) {
     this.city = city;
-    this.mesh = makeCarMesh(0xff2bd6, 0xe8e8f0);
+    this.mesh = makeCarMesh(0xbfe0ff, 0xfaf8fc);
     this.mesh.scale.setScalar(1.1);
     scene.add(this.mesh);
-    this.pos = new THREE.Vector3(62, 1.4, 104);
+    this.pos = new THREE.Vector3(62, 1.4, 193);
     this.vel = new THREE.Vector3();
     this.yaw = 0;
     this.roll = 0;
@@ -182,7 +186,7 @@ export class Hovercar {
         }
       }
     }
-    const ground = this.city.groundHeight(this.pos.x, this.pos.z, this.pos.y, 1.2, 1.5) + 1.4;
+    const ground = Math.max(this.city.groundHeight(this.pos.x, this.pos.z, this.pos.y, 1.2, 1.5), WATER_Y) + 1.4;
     if (this.pos.y < ground) {
       this.pos.y = ground;
       if (this.vel.y < 0) this.vel.y = 0;
