@@ -1,0 +1,30 @@
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: #05030d; color: #dff; font-family: "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif; }
+#game { display: block; width: 100vw; height: 100vh; }
+
+.hidden { display: none !important; }
+.panel { background: rgba(8, 4, 24, 0.6); border: 1px solid rgba(0, 255, 240, 0.35); border-radius: 6px; padding: 8px 12px; backdrop-filter: blur(4px); text-shadow: 0 0 6px rgba(0, 255, 240, 0.6); }
+
+#hud { position: fixed; inset: 0; pointer-events: none; }
+#district { position: absolute; top: 16px; left: 16px; font-size: 18px; letter-spacing: 0.1em; }
+#district small { display: block; font-size: 11px; opacity: 0.7; letter-spacing: 0.05em; }
+#stats { position: absolute; top: 16px; right: 232px; font-size: 13px; line-height: 1.6; min-width: 160px; font-variant-numeric: tabular-nums; }
+#minimap { position: absolute; top: 16px; right: 16px; width: 200px; height: 200px; border-radius: 50%; border: 2px solid rgba(0, 255, 240, 0.5); box-shadow: 0 0 16px rgba(0, 255, 240, 0.3); background: rgba(8, 4, 24, 0.7); }
+#help { position: absolute; bottom: 16px; left: 16px; font-size: 12px; line-height: 1.7; }
+#prompt { position: absolute; bottom: 22%; width: 100%; text-align: center; font-size: 16px; text-shadow: 0 0 8px #0ff; }
+#toast { position: absolute; top: 30%; width: 100%; text-align: center; font-size: 28px; font-weight: bold; letter-spacing: 0.12em; color: #fff; text-shadow: 0 0 12px #f0f, 0 0 24px #0ff; opacity: 0; transition: opacity 0.4s; }
+#toast.show { opacity: 1; }
+
+#start { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; background: radial-gradient(ellipse at center, rgba(40, 0, 70, 0.55), rgba(0, 0, 0, 0.85)); padding: 16px; }
+#start h1 { font-size: clamp(48px, 10vw, 96px); margin: 0 0 12px; letter-spacing: 0.2em; color: #fff; text-shadow: 0 0 10px #f0f, 0 0 30px #0ff, 0 0 60px #0ff; }
+#start p { line-height: 1.8; max-width: 560px; }
+#start .small { font-size: 13px; opacity: 0.7; }
+.chip { color: #ffe066; text-shadow: 0 0 8px #fc0; }
+#startBtn { margin: 20px 0; padding: 14px 40px; font-size: 18px; color: #0ff; background: transparent; border: 2px solid #0ff; border-radius: 4px; cursor: pointer; letter-spacing: 0.1em; box-shadow: 0 0 16px rgba(0, 255, 255, 0.5), inset 0 0 16px rgba(0, 255, 255, 0.25); }
+#startBtn:hover { background: rgba(0, 255, 255, 0.15); }
+
+@media (max-width: 700px) {
+  #stats { right: 16px; top: 132px; }
+  #minimap { width: 110px; height: 110px; }
+  #help { display: none; }
+}
